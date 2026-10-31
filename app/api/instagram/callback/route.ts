@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
-import { getBaseUrl } from "@/lib/env";
+import { getBaseUrl, isUnifiedLogin } from "@/lib/env";
 import { canConnectInstagramAccount } from "@/lib/instagram-accounts";
-import { getLongLivedToken, getUserInfo, subscribeInstagramAccountToWebhooks } from "@/lib/meta/client";
+import {
+  getAssignedInstagramAccounts,
+  getLongLivedToken,
+  getUserInfo,
+  packAccountToken,
+  subscribeInstagramAccountToWebhooks,
+} from "@/lib/meta/client";
 import {
   encryptToken,
   exchangeCodeForToken,
@@ -43,6 +49,100 @@ export async function GET(request: NextRequest) {
 
   try {
     const redirectUri = `${baseUrl}/api/instagram/callback`;
+
+    if (isUnifiedLogin()) {
+      // Unified Login: one system-user token covers every Instagram account the
+      // client assigned. Connect each one, storing the token together with the
+      // account ID so later calls know which account they act on.
+      const { accessToken: systemToken } = await exchangeCodeForToken(
+        code,
+        redirectUri
+      );
+      const assigned = await getAssignedInstagramAccounts(systemToken);
+      if (assigned.length === 0) {
+        throw new Error(
+          "No Instagram professional account was assigned to the app. Choose an account on the login screen and approve the permissions."
+        );
+      }
+
+      // System-user tokens do not expire; keep the expiry far out so the
+      // refresh cron never picks these accounts up.
+      const farFuture = new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
+      let connected = 0;
+      for (const account of assigned) {
+        const instagramId = account.id;
+        const connection = await canConnectInstagramAccount({
+          workspaceId: state.workspaceId,
+          instagramId,
+        });
+        if (!connection.allowed) continue;
+
+        const packed = packAccountToken(instagramId, systemToken);
+        let username = account.username ?? instagramId;
+        let name = account.name;
+        try {
+          const info = await getUserInfo(packed);
+          username = info.username ?? username;
+          name = info.name ?? name;
+        } catch (infoError) {
+          console.warn("[Instagram Callback] Profile lookup failed:", infoError);
+        }
+
+        let subscribed = false;
+        try {
+          const subscription = await subscribeInstagramAccountToWebhooks(
+            instagramId,
+            systemToken
+          );
+          subscribed = Boolean(subscription.success);
+        } catch (subscriptionError) {
+          console.warn(
+            "[Instagram Callback] Webhook subscription failed:",
+            subscriptionError
+          );
+        }
+
+        const unifiedData = {
+          username,
+          name,
+          accessToken: encryptToken(packed),
+          tokenExpiresAt: farFuture,
+          webhookSubscribed: subscribed,
+        };
+        const existingAccount = await prisma.instagramAccount.findUnique({
+          where: { instagramId },
+        });
+        if (existingAccount) {
+          const updated = await prisma.instagramAccount.updateMany({
+            where: {
+              id: existingAccount.id,
+              workspaceId: state.workspaceId,
+              provider: "META",
+            },
+            data: unifiedData,
+          });
+          if (!updated.count) continue;
+        } else {
+          await prisma.instagramAccount.create({
+            data: {
+              ...unifiedData,
+              workspaceId: state.workspaceId,
+              instagramId,
+              provider: "META",
+            },
+          });
+        }
+        connected += 1;
+      }
+
+      if (connected === 0) {
+        return NextResponse.redirect(
+          `${baseUrl}/settings?instagram=already_connected`
+        );
+      }
+      return NextResponse.redirect(`${baseUrl}/dashboard?connected=true`);
+    }
+
     const { accessToken: shortLivedToken } = await exchangeCodeForToken(
       code,
       redirectUri

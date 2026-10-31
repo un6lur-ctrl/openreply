@@ -5,7 +5,12 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "crypto";
-import { getEncryptionKeyHex, requireEnv } from "@/lib/env";
+import {
+  getEncryptionKeyHex,
+  getMetaGraphApiVersion,
+  isUnifiedLogin,
+  requireEnv,
+} from "@/lib/env";
 
 // Instagram API with Instagram Login authorizes on www.instagram.com. The old
 // api.instagram.com/oauth/authorize host belonged to the retired Basic Display
@@ -88,6 +93,20 @@ export function verifyOAuthState(state: string | null): OAuthStatePayload | null
 }
 
 export function getAuthorizationUrl(redirectUri: string, state: string): string {
+  if (isUnifiedLogin()) {
+    // Instagram API with Unified Login: permissions come from the configuration
+    // (config_id) created in the App Dashboard, so there is no scope parameter.
+    const unified = new URLSearchParams({
+      client_id: requireEnv("META_APP_ID"),
+      config_id: requireEnv("META_LOGIN_CONFIG_ID"),
+      redirect_uri: redirectUri,
+      response_type: "code",
+      prompt: "login",
+      state,
+    });
+    return `https://www.facebook.com/dialog/oauth?${unified.toString()}`;
+  }
+
   const params = new URLSearchParams({
     client_id: requireEnv("INSTAGRAM_APP_ID"),
     redirect_uri: redirectUri,
@@ -104,6 +123,27 @@ export async function exchangeCodeForToken(
   code: string,
   redirectUri: string
 ): Promise<{ accessToken: string; userId: string }> {
+  if (isUnifiedLogin()) {
+    // Server-to-server exchange with the Meta app ID and secret (not the
+    // Instagram app credentials). The result is a Business Integration System
+    // User access token, which does not expire.
+    const url = new URL(
+      `https://graph.facebook.com/${getMetaGraphApiVersion()}/oauth/access_token`
+    );
+    url.searchParams.set("client_id", requireEnv("META_APP_ID"));
+    url.searchParams.set("client_secret", requireEnv("FACEBOOK_APP_SECRET"));
+    url.searchParams.set("code", code);
+
+    const unifiedResponse = await fetch(url.toString());
+    const unifiedData = await unifiedResponse.json();
+    if (!unifiedResponse.ok || !unifiedData.access_token) {
+      const message =
+        unifiedData?.error?.message ?? JSON.stringify(unifiedData);
+      throw new Error(`Token exchange failed: ${message}`);
+    }
+    return { accessToken: unifiedData.access_token, userId: "" };
+  }
+
   const body = new URLSearchParams({
     client_id: requireEnv("INSTAGRAM_APP_ID"),
     client_secret: requireEnv("INSTAGRAM_APP_SECRET"),

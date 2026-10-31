@@ -36,8 +36,26 @@ const INSTAGRAM_OAUTH_ENV = [
   "NEXTAUTH_SECRET",
 ] as const;
 
+// Instagram API with Unified Login (the only setup Meta offers to apps created
+// after Instagram Login was closed to new apps). Selected with
+// INSTAGRAM_LOGIN_MODE=unified; unset keeps the Instagram Login behaviour.
+const UNIFIED_OAUTH_ENV = [
+  "META_APP_ID",
+  "FACEBOOK_APP_SECRET",
+  "META_LOGIN_CONFIG_ID",
+  "ENCRYPTION_KEY",
+  "NEXTAUTH_SECRET",
+] as const;
+
+export function isUnifiedLogin(): boolean {
+  return process.env.INSTAGRAM_LOGIN_MODE === "unified";
+}
+
 export function getMissingInstagramOAuthEnv(): string[] {
-  return INSTAGRAM_OAUTH_ENV.filter((name) => {
+  const required: readonly string[] = isUnifiedLogin()
+    ? UNIFIED_OAUTH_ENV
+    : INSTAGRAM_OAUTH_ENV;
+  return required.filter((name) => {
     const value = process.env[name];
     if (!value) return true;
     // A malformed key fails later inside encryptToken, after the user has
