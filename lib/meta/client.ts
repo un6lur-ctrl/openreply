@@ -925,7 +925,11 @@ export async function subscribeInstagramAccountToWebhooks(
         Authorization: `Bearer ${tok(accessToken)}`,
       },
       body: JSON.stringify({
-        subscribed_fields: ["comments", "messages"],
+        // Button taps on a DM template arrive as `messaging_postbacks` under
+        // Unified Login, separately from `messages`.
+        subscribed_fields: isUnifiedLogin()
+          ? ["comments", "messages", "messaging_postbacks"]
+          : ["comments", "messages"],
       }),
     }
   );
