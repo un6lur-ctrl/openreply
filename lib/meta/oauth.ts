@@ -132,6 +132,7 @@ export async function exchangeCodeForToken(
     );
     url.searchParams.set("client_id", requireEnv("META_APP_ID"));
     url.searchParams.set("client_secret", requireEnv("FACEBOOK_APP_SECRET"));
+    url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("code", code);
 
     const unifiedResponse = await fetch(url.toString());
